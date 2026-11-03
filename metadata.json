@@ -1,0 +1,6 @@
+{
+  "name": "Crop Advisor",
+  "description": "IoT and Big Data agricultural course project: virtual soil sensors, soil analysis, and data-driven crop recommendations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

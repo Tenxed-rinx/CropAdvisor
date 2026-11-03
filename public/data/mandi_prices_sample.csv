@@ -1,0 +1,25 @@
+commodity,state,district,market,min_price,max_price,modal_price,arrival_date
+Wheat,Punjab,Ludhiana,Ludhiana,2250,2400,2340,2026-11-02
+Wheat,Haryana,Karnal,Karnal,2260,2420,2350,2026-11-02
+Wheat,Madhya Pradesh,Indore,Indore,2200,2500,2380,2026-11-01
+Rice (Paddy),Punjab,Amritsar,Amritsar,2200,2550,2380,2026-11-02
+Rice (Paddy),Andhra Pradesh,West Godavari,Eluru,2180,2600,2420,2026-11-01
+Maize (Corn),Karnataka,Davangere,Davangere,2050,2300,2180,2026-11-02
+Maize (Corn),Bihar,Purnea,Gulabbagh,1980,2250,2120,2026-11-02
+Chickpea (Gram),Madhya Pradesh,Ujjain,Ujjain,5400,5900,5650,2026-11-02
+Chickpea (Gram),Rajasthan,Kota,Kota,5350,5850,5600,2026-11-01
+Cotton,Gujarat,Rajkot,Rajkot,7000,7600,7250,2026-11-02
+Cotton,Maharashtra,Nagpur,Nagpur,6900,7500,7180,2026-11-02
+Soybean,Madhya Pradesh,Dewas,Dewas,4550,4950,4780,2026-11-02
+Soybean,Maharashtra,Latur,Latur,4600,5020,4810,2026-11-02
+Groundnut (Peanut),Gujarat,Junagadh,Junagadh,6200,6800,6550,2026-11-02
+Mustard,Rajasthan,Bharatpur,Bharatpur,5600,6050,5820,2026-11-02
+Mustard,Haryana,Hisar,Hisar,5550,6000,5780,2026-11-01
+Sugarcane,Uttar Pradesh,Muzaffarnagar,Muzaffarnagar,315,350,335,2026-11-02
+Potato,Uttar Pradesh,Agra,Agra,1150,1550,1350,2026-11-02
+Tomato,Karnataka,Kolar,Kolar,1400,2400,1850,2026-11-02
+Tomato,Maharashtra,Nashik,Pimpalgaon,1350,2200,1780,2026-11-02
+Onion,Maharashtra,Nashik,Lasalgaon,1800,2600,2150,2026-11-02
+Pearl Millet (Bajra),Rajasthan,Jaipur,Jaipur,2400,2700,2550,2026-11-02
+Turmeric,Tamil Nadu,Erode,Erode,13200,15800,14200,2026-11-02
+Banana,Maharashtra,Jalgaon,Raver,1300,1900,1650,2026-11-02
