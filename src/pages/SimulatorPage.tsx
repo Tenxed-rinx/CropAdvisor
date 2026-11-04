@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Play,
   Pause,
@@ -15,7 +15,14 @@ import {
   Copy,
   Check,
   Activity,
-  Sparkles
+  Sparkles,
+  Droplets,
+  SlidersHorizontal,
+  Info,
+  AlertTriangle,
+  Layers,
+  Scale,
+  Gauge
 } from 'lucide-react';
 import {
   LineChart,
@@ -26,6 +33,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   ReferenceLine,
+  ReferenceArea,
   Legend
 } from 'recharts';
 import { useApp } from '../context/AppContext';
@@ -43,18 +51,52 @@ import {
 } from '../lib/firmware';
 import {
   soilAdcToPct,
-  getMoistureStatus
+  soilPctToAdc,
+  getMoistureStatus,
+  SENSOR_EXPLANATION
 } from '../lib/units';
+import {
+  IRRIGATION_PROFILES,
+  IRRIGATION_CATEGORIES,
+  findIrrigationProfile,
+  IrrigationProfile
+} from '../lib/irrigationProfiles';
 
 export const SimulatorPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const {
     readings,
     settings,
     updateSettings,
     addReading,
-    selectReadingForAnalysis
+    selectReadingForAnalysis,
+    selectedCropId,
+    setSelectedCropId
   } = useApp();
+
+  // Initialize crop from URL parameter if provided (e.g. /simulator?crop=rice)
+  useEffect(() => {
+    const cropFromUrl = searchParams.get('crop');
+    if (cropFromUrl) {
+      const match = findIrrigationProfile(cropFromUrl);
+      if (match) {
+        setSelectedCropId(match.id);
+      }
+    }
+  }, [searchParams, setSelectedCropId]);
+
+  const activeProfile = useMemo(() => {
+    return findIrrigationProfile(selectedCropId || 'general');
+  }, [selectedCropId]);
+
+  // Session-level custom thresholds override for the active crop
+  const [customThresholds, setCustomThresholds] = useState<{ onBelowPct: number; offAbovePct: number } | null>(null);
+  const [editingThresholds, setEditingThresholds] = useState(false);
+
+  // Effective thresholds
+  const effectiveOnPct = customThresholds?.onBelowPct ?? activeProfile.onBelowPct;
+  const effectiveOffPct = customThresholds?.offAbovePct ?? activeProfile.offAbovePct;
 
   // Simulator Hardware State
   const [simState, setSimState] = useState<SimulatorState>({
@@ -67,14 +109,19 @@ export const SimulatorPage: React.FC = () => {
     pumpOn: false,
     running: false,
     tick: 0,
-    overrideMode: 'auto'
+    overrideMode: 'auto',
+    selectedCropId: activeProfile.id,
+    customThresholds: null,
+    pumpCycles: 0,
+    totalPumpOnTicks: 0,
+    estimatedWaterUsedL: 0
   });
 
   const [serialLines, setSerialLines] = useState<string[]>([
-    'Field monitoring active: Soil is Optimal (49%) · Air 28.5°C, 58% humidity · Water tank adequate · Pump: OFF.'
+    `[Firmware Boot] Crop Profile: ${activeProfile.name} | Target Band: ${effectiveOnPct}% - ${effectiveOffPct}% | Pump: OFF`
   ]);
   const [caption, setCaption] = useState<string>(
-    'Field status normal. Soil moisture is within healthy range.'
+    `${activeProfile.name}: Target moisture is ${effectiveOnPct}% to ${effectiveOffPct}%. Soil is normal.`
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tableModalOpen, setTableModalOpen] = useState(false);
@@ -84,12 +131,43 @@ export const SimulatorPage: React.FC = () => {
   const simStateRef = useRef(simState);
   simStateRef.current = simState;
 
+  // Handle switching crop profile
+  const handleSelectCrop = (cropId: string) => {
+    setSelectedCropId(cropId);
+    setCustomThresholds(null);
+    setEditingThresholds(false);
+
+    const newProfile = findIrrigationProfile(cropId);
+    const frameNotice = `Crop profile: ${newProfile.name} | ON < ${newProfile.onBelowPct}% | OFF > ${newProfile.offAbovePct}%`;
+    setSerialLines(prev => [...prev.slice(-99), frameNotice]);
+
+    // Re-evaluate rules immediately for current state
+    const current = simStateRef.current;
+    const { pumpOn, caption: newCaption } = evaluateFirmwareRules(
+      current.pumpOn,
+      current.soilAdc,
+      current.tempC,
+      current.waterAdc,
+      current.overrideMode,
+      settings,
+      newProfile,
+      null
+    );
+    setCaption(newCaption);
+    setSimState(prev => ({
+      ...prev,
+      selectedCropId: cropId,
+      customThresholds: null,
+      pumpOn
+    }));
+  };
+
   // Perform single tick
   const stepSimulation = () => {
     const current = simStateRef.current;
     const nextTick = current.tick + 1;
 
-    const result = simulateTickPhysics(current, settings);
+    const result = simulateTickPhysics(current, settings, activeProfile, customThresholds);
 
     const reading = createSensorReading(
       result.newSoilAdc,
@@ -100,7 +178,11 @@ export const SimulatorPage: React.FC = () => {
       result.newPh,
       result.newPumpOn,
       result.alerts,
-      'simulated'
+      'simulated',
+      activeProfile.name,
+      effectiveOnPct,
+      effectiveOffPct,
+      result.estimatedWaterUsedL
     );
 
     const frame = formatSerialFrame(reading, nextTick);
@@ -117,7 +199,10 @@ export const SimulatorPage: React.FC = () => {
       waterAdc: result.newWaterAdc,
       ph: result.newPh,
       pumpOn: result.newPumpOn,
-      tick: nextTick
+      tick: nextTick,
+      pumpCycles: result.pumpCycles,
+      totalPumpOnTicks: result.totalPumpOnTicks,
+      estimatedWaterUsedL: result.estimatedWaterUsedL
     }));
 
     if (settings.autoLog) {
@@ -135,7 +220,16 @@ export const SimulatorPage: React.FC = () => {
     }, intervalMs);
 
     return () => clearInterval(interval);
-  }, [simState.running, settings.speed, settings.autoLog, settings.realisticNoise, settings.pumpOnThresholdAdc, settings.pumpOffThresholdAdc]);
+  }, [
+    simState.running,
+    settings.speed,
+    settings.autoLog,
+    settings.realisticNoise,
+    activeProfile,
+    customThresholds,
+    effectiveOnPct,
+    effectiveOffPct
+  ]);
 
   // Handle Preset Buttons
   const applyPreset = (presetName: string) => {
@@ -145,19 +239,19 @@ export const SimulatorPage: React.FC = () => {
     switch (presetName) {
       case 'wet':
         newValues = { soilAdc: 320, tempC: 22.0, humidity: 82, lightAdc: 400, waterAdc: 800, ph: 6.6 };
-        message = 'Field condition updated: Wet Soil (after rain/irrigation). Soil has plenty of moisture.';
+        message = `Field condition: Wet Soil (85% moisture). Checking ${activeProfile.name} upper limit.`;
         break;
       case 'dry':
         newValues = { soilAdc: 780, tempC: 34.0, humidity: 40, lightAdc: 900, waterAdc: 600, ph: 7.2 };
-        message = 'Field condition updated: Dry Field (soil moisture low). Water pump needed.';
+        message = `Field condition: Dry Soil (30% moisture). Triggering irrigation for ${activeProfile.name} if < ${effectiveOnPct}%.`;
         break;
       case 'hot':
         newValues = { soilAdc: 650, tempC: 38.5, humidity: 35, lightAdc: 980, waterAdc: 450, ph: 7.0 };
-        message = 'Field condition updated: Hot Afternoon (elevated temperature). Evaporation is higher.';
+        message = `Field condition: Hot Afternoon (38.5°C). Soil evaporation accelerated.`;
         break;
       case 'low_water':
         newValues = { soilAdc: 690, tempC: 29.0, humidity: 50, lightAdc: 650, waterAdc: 120, ph: 6.8 };
-        message = 'Field condition updated: Low Water Tank. Pump safely stopped to prevent motor damage.';
+        message = `Field condition: Low Water Tank (12%). Pump dry-run lock engaged.`;
         break;
       default:
         break;
@@ -171,7 +265,9 @@ export const SimulatorPage: React.FC = () => {
         merged.tempC,
         merged.waterAdc,
         merged.overrideMode,
-        settings
+        settings,
+        activeProfile,
+        customThresholds
       );
       setCaption(newCaption);
       return { ...merged, pumpOn };
@@ -190,7 +286,9 @@ export const SimulatorPage: React.FC = () => {
         updated.tempC,
         updated.waterAdc,
         updated.overrideMode,
-        settings
+        settings,
+        activeProfile,
+        customThresholds
       );
       setCaption(newCaption);
       return { ...updated, pumpOn };
@@ -199,7 +297,7 @@ export const SimulatorPage: React.FC = () => {
 
   // Copy Arduino code
   const handleCopyCode = () => {
-    navigator.clipboard.writeText(generateArduinoInoCode(settings));
+    navigator.clipboard.writeText(generateArduinoInoCode(settings, activeProfile, customThresholds));
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2500);
   };
@@ -211,24 +309,75 @@ export const SimulatorPage: React.FC = () => {
     tempC: r.tempC
   }));
 
-  const latestReading = readings[0] || createSensorReading(simState.soilAdc, simState.tempC, simState.humidity, simState.lightAdc, simState.waterAdc, simState.ph, simState.pumpOn, [], 'simulated');
+  const latestReading = readings[0] || createSensorReading(
+    simState.soilAdc,
+    simState.tempC,
+    simState.humidity,
+    simState.lightAdc,
+    simState.waterAdc,
+    simState.ph,
+    simState.pumpOn,
+    [],
+    'simulated',
+    activeProfile.name,
+    effectiveOnPct,
+    effectiveOffPct,
+    simState.estimatedWaterUsedL
+  );
+
+  // Water comparison vs General profile
+  const waterDiffPct = Math.round((activeProfile.waterUseMultiplier - 1.0) * 100);
 
   return (
     <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-8 space-y-8">
-      {/* Header (Simplified wording per requirement 1 & 2) */}
-      <div className="bg-white rounded-2xl border border-[#2F6B3A]/15 p-6 shadow-xs">
-        <h1 className="text-2xl sm:text-3xl font-bold text-[#1F2A24]">
-          Virtual Sensor Board and Data Preview
-        </h1>
-        <p className="text-sm text-[#5B665F] mt-1 max-w-2xl">
-          Monitor soil and weather data in real time without physical hardware.
-        </p>
+      {/* Header */}
+      <div className="bg-white rounded-2xl border border-[#2F6B3A]/15 p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <span className="text-xs font-semibold uppercase tracking-wider text-[#2F6B3A]">
+            Section 1 · Virtual IoT Sensor Board
+          </span>
+          <h1 className="text-2xl sm:text-3xl font-bold text-[#1F2A24] mt-0.5">
+            Crop-Aware Virtual Sensor Board & Irrigation
+          </h1>
+          <p className="text-sm text-[#5B665F] mt-1 max-w-2xl">
+            Monitor real-time soil telemetry and test crop-specific automated irrigation rules without physical hardware.
+          </p>
+        </div>
+
+        {/* Global Reset */}
+        <button
+          onClick={() => {
+            setSimState({
+              soilAdc: 620,
+              tempC: 28.5,
+              humidity: 58,
+              lightAdc: 720,
+              waterAdc: 650,
+              ph: 6.8,
+              pumpOn: false,
+              running: false,
+              tick: 0,
+              overrideMode: 'auto',
+              selectedCropId: activeProfile.id,
+              customThresholds: null,
+              pumpCycles: 0,
+              totalPumpOnTicks: 0,
+              estimatedWaterUsedL: 0
+            });
+            setCaption(`Reset board to standard baseline for ${activeProfile.name}.`);
+            setSerialLines(prev => [...prev, `Board reset to initial baseline values.`]);
+          }}
+          className="flex items-center gap-1.5 px-3.5 py-2 text-[#5B665F] hover:text-[#1F2A24] hover:bg-[#FAF7F0] border border-neutral-200 rounded-xl text-xs font-medium transition-colors self-start md:self-auto"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          <span>Reset Board</span>
+        </button>
       </div>
 
-      {/* Control Bar (Step and paused tick buttons removed per requirement 3) */}
+      {/* Control Bar with Crop Dropdown & Stream Controls */}
       <div className="bg-white rounded-2xl p-4 border border-[#2F6B3A]/15 shadow-xs flex flex-wrap items-center justify-between gap-4">
-        {/* Playback buttons */}
-        <div className="flex items-center gap-2">
+        {/* Left: Playback controls & Crop Selector */}
+        <div className="flex flex-wrap items-center gap-3">
           {simState.running ? (
             <button
               onClick={() => setSimState(prev => ({ ...prev, running: false }))}
@@ -247,32 +396,35 @@ export const SimulatorPage: React.FC = () => {
             </button>
           )}
 
-          <button
-            onClick={() => {
-              setSimState({
-                soilAdc: 620,
-                tempC: 28.5,
-                humidity: 58,
-                lightAdc: 720,
-                waterAdc: 650,
-                ph: 6.8,
-                pumpOn: false,
-                running: false,
-                tick: 0,
-                overrideMode: 'auto'
-              });
-              setCaption('Board reset to standard baseline values.');
-              setSerialLines(prev => [...prev, 'Reset to standard field baseline.']);
-            }}
-            className="flex items-center gap-1 px-3 py-2 text-[#5B665F] hover:text-[#1F2A24] hover:bg-[#FAF7F0] rounded-xl text-xs transition-colors"
-            title="Reset board state"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Reset</span>
-          </button>
+          {/* Crop Profile Dropdown (Grouped by Category) */}
+          <div className="flex items-center gap-2 bg-[#FAF7F0] px-3 py-1.5 rounded-xl border border-[#2F6B3A]/20">
+            <span className="text-xs font-bold text-[#2F6B3A] flex items-center gap-1">
+              <Droplets className="w-3.5 h-3.5" />
+              <span>Crop:</span>
+            </span>
+            <select
+              value={activeProfile.id}
+              onChange={(e) => handleSelectCrop(e.target.value)}
+              className="bg-white border border-[#2F6B3A]/25 rounded-lg px-2.5 py-1 text-xs font-semibold text-[#1F2A24] focus:outline-none focus:ring-1 focus:ring-[#2F6B3A]"
+            >
+              {IRRIGATION_CATEGORIES.map(category => {
+                const cropsInCategory = IRRIGATION_PROFILES.filter(p => p.category === category);
+                if (cropsInCategory.length === 0) return null;
+                return (
+                  <optgroup key={category} label={category}>
+                    {cropsInCategory.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} (ON &lt; {p.onBelowPct}%, OFF &gt; {p.offAbovePct}%)
+                      </option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+            </select>
+          </div>
         </div>
 
-        {/* Speed, Noise & Thresholds Settings */}
+        {/* Right: Simulation Speed & Thresholds */}
         <div className="flex flex-wrap items-center gap-3 text-xs">
           {/* Speed selector */}
           <div className="flex items-center gap-1 bg-[#FAF7F0] p-1 rounded-lg border border-[#2F6B3A]/15">
@@ -292,7 +444,7 @@ export const SimulatorPage: React.FC = () => {
             ))}
           </div>
 
-          {/* Noise toggle */}
+          {/* Natural Noise toggle */}
           <button
             onClick={() => updateSettings({ realisticNoise: !settings.realisticNoise })}
             className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border transition-colors ${
@@ -305,7 +457,7 @@ export const SimulatorPage: React.FC = () => {
             <span>Natural Variation</span>
           </button>
 
-          {/* Auto-log toggle */}
+          {/* Auto-Save toggle */}
           <button
             onClick={() => updateSettings({ autoLog: !settings.autoLog })}
             className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border transition-colors ${
@@ -318,14 +470,238 @@ export const SimulatorPage: React.FC = () => {
             <span>Auto-Save</span>
           </button>
 
-          {/* Settings button */}
+          {/* Hardware Settings button */}
           <button
             onClick={() => setSettingsOpen(true)}
             className="flex items-center gap-1 px-3 py-1.5 bg-[#FAF7F0] border border-[#2F6B3A]/25 text-[#1F2A24] font-semibold rounded-lg hover:bg-[#E8F1E4] transition-colors"
           >
             <Settings className="w-3.5 h-3.5 text-[#2F6B3A]" />
-            <span>Pump Thresholds</span>
+            <span>Hardware Limits</span>
           </button>
+        </div>
+      </div>
+
+      {/* Active Crop Profile Card & Target Band Overview */}
+      <div className="bg-white rounded-2xl p-5 border border-[#2F6B3A]/20 shadow-xs space-y-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-3 border-b border-neutral-100">
+          <div className="flex items-center gap-3.5">
+            <img
+              src={activeProfile.image}
+              alt={activeProfile.name}
+              className="w-14 h-14 rounded-xl object-cover border border-[#2F6B3A]/20 shadow-xs"
+            />
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-[#1F2A24]">{activeProfile.name}</h2>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#E8F1E4] text-[#2F6B3A]">
+                  {activeProfile.category}
+                </span>
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                  activeProfile.waterDemand === 'Very high'
+                    ? 'bg-blue-100 text-blue-800'
+                    : activeProfile.waterDemand === 'High'
+                    ? 'bg-sky-100 text-sky-800'
+                    : activeProfile.waterDemand === 'Medium'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {activeProfile.waterDemand} Water Demand
+                </span>
+              </div>
+              <p className="text-xs text-[#5B665F] mt-0.5">
+                {activeProfile.note}
+              </p>
+            </div>
+          </div>
+
+          {/* Threshold Action Button */}
+          <div className="flex items-center gap-2 self-start md:self-auto">
+            <button
+              onClick={() => setEditingThresholds(!editingThresholds)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#FAF7F0] border border-[#2F6B3A]/20 text-[#2F6B3A] rounded-xl text-xs font-semibold hover:bg-[#E8F1E4] transition-colors"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span>{editingThresholds ? 'Close threshold editor' : 'Edit thresholds'}</span>
+            </button>
+            {customThresholds && (
+              <button
+                onClick={() => setCustomThresholds(null)}
+                className="text-xs text-[#C2410C] hover:underline"
+              >
+                Reset to default
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Target Moisture Band & Rule Summary */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          <div className="p-3 bg-[#FAF7F0] rounded-xl border border-[#2F6B3A]/15">
+            <span className="text-[11px] text-[#5B665F] block">Target Moisture Band</span>
+            <span className="text-sm font-bold text-[#2F6B3A] block mt-0.5">
+              Keep between {effectiveOnPct}% and {effectiveOffPct}%
+            </span>
+            <span className="text-[10px] text-[#5B665F]">
+              Derived ADC: {soilPctToAdc(effectiveOffPct)} (Wet) to {soilPctToAdc(effectiveOnPct)} (Dry)
+            </span>
+          </div>
+
+          <div className="p-3 bg-[#FAF7F0] rounded-xl border border-[#2F6B3A]/15">
+            <span className="text-[11px] text-[#5B665F] block">Firmware Hysteresis Rule</span>
+            <span className="text-xs font-bold text-[#1F2A24] block mt-0.5">
+              {activeProfile.name}: pump ON below {effectiveOnPct}%, OFF above {effectiveOffPct}%
+            </span>
+            <span className="text-[10px] text-[#5B665F]">
+              Cycle type: {activeProfile.pumpRunCycle} runs
+            </span>
+          </div>
+
+          <div className="p-3 bg-[#FAF7F0] rounded-xl border border-[#2F6B3A]/15">
+            <span className="text-[11px] text-[#5B665F] block">Safety Limits</span>
+            <span className="text-xs font-semibold text-[#1F2A24] block mt-0.5">
+              Stress &lt; {activeProfile.drynessWarnPct}% · Waterlogging &gt; {activeProfile.overwaterWarnPct}%
+            </span>
+            <span className="text-[10px] text-[#5B665F]">
+              Ideal temp: {activeProfile.idealTempRange[0]}°C - {activeProfile.idealTempRange[1]}°C
+            </span>
+          </div>
+
+          <div className="p-3 bg-[#FAF7F0] rounded-xl border border-[#2F6B3A]/15">
+            <span className="text-[11px] text-[#5B665F] block">Relative Water Consumption</span>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <span className="text-sm font-bold text-[#1F2A24]">
+                {activeProfile.waterUseMultiplier}x
+              </span>
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                waterDiffPct > 0 ? 'bg-orange-100 text-orange-900' : waterDiffPct < 0 ? 'bg-emerald-100 text-emerald-900' : 'bg-neutral-100 text-neutral-700'
+              }`}>
+                {waterDiffPct > 0 ? `+${waterDiffPct}% vs General` : waterDiffPct < 0 ? `${waterDiffPct}% vs General` : 'Matches General'}
+              </span>
+            </div>
+            <span className="text-[10px] text-[#5B665F]">
+              Drains water tank faster during irrigation
+            </span>
+          </div>
+        </div>
+
+        {/* In-Session Threshold Override Editor */}
+        {editingThresholds && (
+          <div className="p-4 bg-emerald-50/60 rounded-xl border border-[#2F6B3A]/25 space-y-3 text-xs">
+            <div className="flex justify-between items-center">
+              <span className="font-bold text-[#2F6B3A]">
+                Custom Session Thresholds for {activeProfile.name}
+              </span>
+              <span className="text-[11px] text-[#5B665F]">
+                Changes only apply to current browser simulation session
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="font-semibold text-[#1F2A24]">Pump ON below (% Moisture)</span>
+                  <span className="font-mono font-bold text-[#C2410C]">
+                    {effectiveOnPct}% (ADC {soilPctToAdc(effectiveOnPct)})
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="20"
+                  max="85"
+                  value={effectiveOnPct}
+                  onChange={(e) => {
+                    const newOn = Number(e.target.value);
+                    setCustomThresholds({
+                      onBelowPct: newOn,
+                      offAbovePct: Math.max(newOn + 5, effectiveOffPct)
+                    });
+                  }}
+                  className="w-full accent-[#C2410C]"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between mb-1">
+                  <span className="font-semibold text-[#1F2A24]">Pump OFF above (% Moisture)</span>
+                  <span className="font-mono font-bold text-[#2F8F4E]">
+                    {effectiveOffPct}% (ADC {soilPctToAdc(effectiveOffPct)})
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="30"
+                  max="98"
+                  value={effectiveOffPct}
+                  onChange={(e) => {
+                    const newOff = Number(e.target.value);
+                    setCustomThresholds({
+                      onBelowPct: Math.min(effectiveOnPct, newOff - 5),
+                      offAbovePct: newOff
+                    });
+                  }}
+                  className="w-full accent-[#2F8F4E]"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Irrigation Counter & Water Resource Panel */}
+      <div className="bg-white rounded-2xl p-5 border border-[#2F6B3A]/15 shadow-xs">
+        <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+          <div className="flex items-center gap-2">
+            <Gauge className="w-4 h-4 text-[#2F6B3A]" />
+            <h3 className="text-sm font-bold text-[#1F2A24]">
+              Active Irrigation & Resource Counter
+            </h3>
+          </div>
+          <span className="text-[11px] text-[#5B665F]">
+            Assumption: 2 Litres water consumed per active pump tick
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-3 text-xs">
+          <div className="p-3 bg-[#FAF7F0] rounded-xl border border-neutral-200">
+            <span className="text-[11px] text-[#5B665F] block">Total Pump Cycles</span>
+            <div className="text-xl font-bold font-mono text-[#1F2A24] mt-1">
+              {simState.pumpCycles}
+            </div>
+            <span className="text-[10px] text-[#5B665F]">ON/OFF transitions</span>
+          </div>
+
+          <div className="p-3 bg-[#FAF7F0] rounded-xl border border-neutral-200">
+            <span className="text-[11px] text-[#5B665F] block">Pump Run Duration</span>
+            <div className="text-xl font-bold font-mono text-[#2F6B3A] mt-1">
+              {simState.totalPumpOnTicks} ticks
+            </div>
+            <span className="text-[10px] text-[#5B665F]">Active watering intervals</span>
+          </div>
+
+          <div className="p-3 bg-[#FAF7F0] rounded-xl border border-neutral-200">
+            <span className="text-[11px] text-[#5B665F] block">Estimated Water Used</span>
+            <div className="text-xl font-bold font-mono text-sky-700 mt-1">
+              {simState.estimatedWaterUsedL} L
+            </div>
+            <span className="text-[10px] text-[#5B665F]">Derived volumetric consumption</span>
+          </div>
+
+          <div className="p-3 bg-[#FAF7F0] rounded-xl border border-neutral-200">
+            <span className="text-[11px] text-[#5B665F] block">Water Use vs General</span>
+            <div className="flex items-baseline gap-1 mt-1">
+              <span className={`text-base font-bold font-mono ${
+                waterDiffPct > 0 ? 'text-[#C2410C]' : waterDiffPct < 0 ? 'text-[#2F8F4E]' : 'text-[#1F2A24]'
+              }`}>
+                {waterDiffPct > 0 ? `+${waterDiffPct}%` : waterDiffPct < 0 ? `${waterDiffPct}%` : '0%'}
+              </span>
+              <span className="text-[10px] text-[#5B665F]">
+                ({activeProfile.waterUseMultiplier}x rate)
+              </span>
+            </div>
+            <span className="text-[10px] text-[#5B665F] block truncate">
+              {activeProfile.name} tank drain rate
+            </span>
+          </div>
         </div>
       </div>
 
@@ -336,8 +712,8 @@ export const SimulatorPage: React.FC = () => {
           <span className="font-bold text-[#2F6B3A]">System Action:</span>
           <span className="font-medium">{caption}</span>
         </div>
-        <span className="hidden sm:inline text-[#5B665F]">
-          Auto-irrigation enabled
+        <span className="hidden sm:inline text-[#5B665F] font-mono">
+          Target: {effectiveOnPct}% - {effectiveOffPct}%
         </span>
       </div>
 
@@ -403,12 +779,12 @@ export const SimulatorPage: React.FC = () => {
               <span className="text-[11px] text-[#5B665F]">Simulate real farm shifts</span>
             </div>
 
-            {/* 1. Soil Moisture Slider */}
-            <div className="space-y-1">
+            {/* 1. Soil Moisture Slider with Crop Target Markers */}
+            <div className="space-y-1.5">
               <div className="flex justify-between text-xs">
                 <span className="font-semibold text-[#1F2A24]">Soil Moisture Level</span>
                 <span className="font-mono text-[#2F6B3A] font-bold">
-                  {soilAdcToPct(simState.soilAdc)}% · {getMoistureStatus(soilAdcToPct(simState.soilAdc))}
+                  {soilAdcToPct(simState.soilAdc)}% · {simState.soilAdc} ADC ({getMoistureStatus(soilAdcToPct(simState.soilAdc))})
                 </span>
               </div>
               <input
@@ -420,8 +796,22 @@ export const SimulatorPage: React.FC = () => {
                 className="w-full accent-[#2F6B3A]"
               />
               <div className="flex justify-between text-[10px] text-[#5B665F]">
-                <span>Wet / Watered</span>
-                <span>Dry / Needs Water</span>
+                <span>Wet / Watered (200 ADC)</span>
+                <span>Dry / Arid (1023 ADC)</span>
+              </div>
+              {/* Note about ADC & Target Band */}
+              <div className="pt-1 flex flex-col gap-1 text-[11px] bg-[#FAF7F0] p-2.5 rounded-lg border border-[#2F6B3A]/15">
+                <div className="flex justify-between font-mono">
+                  <span className="text-[#2F6B3A] font-semibold">
+                    {activeProfile.name} Target: {effectiveOnPct}% - {effectiveOffPct}%
+                  </span>
+                  <span className={simState.pumpOn ? 'text-[#2F8F4E] font-bold' : 'text-[#5B665F]'}>
+                    Pump: {simState.pumpOn ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+                <span className="text-[10px] text-[#5B665F]">
+                  {SENSOR_EXPLANATION}
+                </span>
               </div>
             </div>
 
@@ -438,7 +828,7 @@ export const SimulatorPage: React.FC = () => {
                 step="0.5"
                 value={simState.tempC}
                 onChange={(e) => handleSliderChange('tempC', Number(e.target.value))}
-                className="w-full accent-[#C2410C]"
+                className="w-full accent-[#D98A0B]"
               />
             </div>
 
@@ -450,7 +840,7 @@ export const SimulatorPage: React.FC = () => {
               </div>
               <input
                 type="range"
-                min="0"
+                min="10"
                 max="100"
                 value={simState.humidity}
                 onChange={(e) => handleSliderChange('humidity', Number(e.target.value))}
@@ -458,11 +848,13 @@ export const SimulatorPage: React.FC = () => {
               />
             </div>
 
-            {/* 4. Light */}
+            {/* 4. Sunlight (LDR) */}
             <div className="space-y-1">
               <div className="flex justify-between text-xs">
-                <span className="font-semibold text-[#1F2A24]">Sunlight Intensity</span>
-                <span className="font-mono text-[#1F2A24] font-bold">{simState.lightAdc} ADC</span>
+                <span className="font-semibold text-[#1F2A24]">Sunlight Intensity (LDR)</span>
+                <span className="font-mono text-[#1F2A24] font-bold">
+                  {simState.lightAdc} ADC ({simState.lightAdc > 700 ? 'Bright Daylight' : 'Low Light'})
+                </span>
               </div>
               <input
                 type="range"
@@ -511,7 +903,7 @@ export const SimulatorPage: React.FC = () => {
 
             {/* Pump Override Mode */}
             <div className="pt-2 border-t border-neutral-100 flex items-center justify-between">
-              <span className="text-xs font-semibold text-[#1F2A24]">Pump Mode:</span>
+              <span className="text-xs font-semibold text-[#1F2A24]">Pump Override:</span>
               <div className="flex items-center gap-1 bg-[#FAF7F0] p-1 rounded-lg border border-[#2F6B3A]/15 text-xs">
                 {(['auto', 'on', 'off'] as const).map(mode => (
                   <button
@@ -525,7 +917,9 @@ export const SimulatorPage: React.FC = () => {
                           updated.tempC,
                           updated.waterAdc,
                           mode,
-                          settings
+                          settings,
+                          activeProfile,
+                          customThresholds
                         );
                         setCaption(newCap);
                         return { ...updated, pumpOn };
@@ -547,18 +941,20 @@ export const SimulatorPage: React.FC = () => {
           {/* Farmer-Friendly Serial Monitor */}
           <SerialMonitor
             lines={serialLines}
-            onClear={() => setSerialLines(['Buffer cleared.'])}
+            onClear={() => setSerialLines([`[Buffer Cleared] Monitoring ${activeProfile.name}...`])}
             running={simState.running}
           />
         </div>
       </div>
 
-      {/* Live Data Preview Section (CSV export card removed per requirement 8) */}
+      {/* Live Data Preview Section */}
       <div className="space-y-6 pt-4 border-t border-[#2F6B3A]/15">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-bold text-[#1F2A24]">Live Telemetry Stream</h2>
-            <p className="text-xs text-[#5B665F]">Real-time chart streaming and observation records</p>
+            <h2 className="text-xl font-bold text-[#1F2A24]">Live Telemetry Stream & Crop Dynamics</h2>
+            <p className="text-xs text-[#5B665F]">
+              Monitoring active crop band ({effectiveOnPct}% - {effectiveOffPct}%) and sensor changes
+            </p>
           </div>
           <button
             onClick={() => setTableModalOpen(true)}
@@ -576,13 +972,17 @@ export const SimulatorPage: React.FC = () => {
               <span className="text-xl font-bold text-[#1F2A24] font-mono">{latestReading.soilMoisturePct}%</span>
             </div>
             <span className={`inline-block mt-2 text-[10px] font-semibold px-2 py-0.5 rounded ${
-              getMoistureStatus(latestReading.soilMoisturePct) === 'Dry'
+              latestReading.soilMoisturePct < effectiveOnPct
                 ? 'bg-amber-100 text-amber-900'
-                : getMoistureStatus(latestReading.soilMoisturePct) === 'Wet'
+                : latestReading.soilMoisturePct > effectiveOffPct
                 ? 'bg-blue-100 text-blue-900'
                 : 'bg-emerald-100 text-emerald-900'
             }`}>
-              {getMoistureStatus(latestReading.soilMoisturePct)}
+              {latestReading.soilMoisturePct < effectiveOnPct
+                ? 'Below Target'
+                : latestReading.soilMoisturePct > effectiveOffPct
+                ? 'Above Target'
+                : 'In Target Band'}
             </span>
           </div>
 
@@ -638,28 +1038,32 @@ export const SimulatorPage: React.FC = () => {
               </span>
             </div>
             <span className="inline-block mt-2 text-[10px] font-semibold px-2 py-0.5 rounded bg-neutral-100 text-neutral-700">
-              {latestReading.pumpOn ? 'Watering' : 'Resting'}
+              {latestReading.pumpOn ? 'Irrigating' : 'Resting'}
             </span>
           </div>
         </div>
 
         {/* Charts & Table Preview Split */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Live Line Chart (7 cols) */}
+          {/* Live Line Chart with Shaded Crop Target Band (7 cols) */}
           <div className="lg:col-span-7 bg-white rounded-2xl p-5 border border-[#2F6B3A]/15 shadow-xs space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
               <div>
-                <h3 className="text-sm font-bold text-[#1F2A24]">Soil Moisture & Temperature Dynamics</h3>
-                <span className="text-[11px] text-[#5B665F]">Real-time sensor stream</span>
+                <h3 className="text-sm font-bold text-[#1F2A24]">
+                  {activeProfile.name} Moisture Dynamics & Target Band
+                </h3>
+                <span className="text-[11px] text-[#5B665F]">
+                  Green shaded band shows ideal {effectiveOnPct}% - {effectiveOffPct}% range
+                </span>
               </div>
-              <div className="text-[11px] text-[#5B665F] font-mono">
-                Dry Threshold: &lt; {soilAdcToPct(settings.pumpOnThresholdAdc)}%
+              <div className="text-[11px] text-[#2F6B3A] font-mono font-semibold">
+                ON &lt; {effectiveOnPct}% | OFF &gt; {effectiveOffPct}%
               </div>
             </div>
 
-            <div className="h-[260px] w-full">
+            <div className="h-[280px] w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <LineChart data={chartData} margin={{ top: 15, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#E8F1E4" vertical={false} />
                   <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#5B665F' }} />
                   <YAxis yAxisId="left" domain={[0, 100]} tick={{ fontSize: 10, fill: '#5B665F' }} />
@@ -668,13 +1072,38 @@ export const SimulatorPage: React.FC = () => {
                     contentStyle={{ backgroundColor: '#FAF7F0', borderColor: '#2F6B3A', borderRadius: '8px', fontSize: '11px' }}
                   />
                   <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+
+                  {/* Shaded Target Moisture Band for Active Crop */}
+                  <ReferenceArea
+                    yAxisId="left"
+                    y1={effectiveOnPct}
+                    y2={effectiveOffPct}
+                    fill="#2F8F4E"
+                    fillOpacity={0.12}
+                    stroke="#2F8F4E"
+                    strokeDasharray="3 3"
+                  />
+
+                  {/* Pump ON line */}
                   <ReferenceLine
                     yAxisId="left"
-                    y={soilAdcToPct(settings.pumpOnThresholdAdc)}
-                    label={{ value: 'Watering Threshold', fill: '#C2410C', fontSize: 10 }}
+                    y={effectiveOnPct}
+                    label={{ value: `Pump ON (<${effectiveOnPct}%)`, fill: '#C2410C', fontSize: 10, position: 'insideBottomLeft' }}
                     stroke="#C2410C"
                     strokeDasharray="4 4"
+                    strokeWidth={1.5}
                   />
+
+                  {/* Pump OFF line */}
+                  <ReferenceLine
+                    yAxisId="left"
+                    y={effectiveOffPct}
+                    label={{ value: `Pump OFF (>${effectiveOffPct}%)`, fill: '#2F8F4E', fontSize: 10, position: 'insideTopLeft' }}
+                    stroke="#2F8F4E"
+                    strokeDasharray="4 4"
+                    strokeWidth={1.5}
+                  />
+
                   <Line
                     yAxisId="left"
                     type="monotone"
@@ -700,12 +1129,12 @@ export const SimulatorPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Table Preview (Last 8 rows) (5 cols) */}
+          {/* Table Preview (Last 8 rows) with Crop Profile Column (5 cols) */}
           <div className="lg:col-span-5 bg-white rounded-2xl p-5 border border-[#2F6B3A]/15 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-bold text-[#1F2A24]">Recent Records</h3>
-                <span className="text-[11px] text-[#5B665F]">Continuously streaming</span>
+                <h3 className="text-sm font-bold text-[#1F2A24]">Recent Logged Records</h3>
+                <span className="text-[11px] text-[#5B665F]">Includes active crop profile & targets</span>
               </div>
               <button
                 onClick={() => setTableModalOpen(true)}
@@ -720,10 +1149,10 @@ export const SimulatorPage: React.FC = () => {
                 <thead>
                   <tr className="border-b border-neutral-100 text-[#5B665F] font-sans">
                     <th className="py-1.5 px-2">Time</th>
+                    <th className="py-1.5 px-2">Crop</th>
                     <th className="py-1.5 px-2">Moisture</th>
-                    <th className="py-1.5 px-2">Temp</th>
                     <th className="py-1.5 px-2">Pump</th>
-                    <th className="py-1.5 px-2">Status</th>
+                    <th className="py-1.5 px-2">Water</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-50">
@@ -732,10 +1161,15 @@ export const SimulatorPage: React.FC = () => {
                       <td className="py-1.5 px-2 text-[#1F2A24]">
                         {new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                       </td>
-                      <td className="py-1.5 px-2 text-[#2F6B3A] font-semibold">
-                        {r.soilMoisturePct}%
+                      <td className="py-1.5 px-2 font-sans font-semibold text-[#2F6B3A]">
+                        {r.cropProfile || 'General'}
                       </td>
-                      <td className="py-1.5 px-2">{r.tempC}°C</td>
+                      <td className="py-1.5 px-2">
+                        <span className="text-[#1F2A24] font-semibold">{r.soilMoisturePct}%</span>
+                        <span className="text-[10px] text-[#5B665F] block font-sans">
+                          {r.targetMinPct ? `${r.targetMinPct}-${r.targetMaxPct}%` : '63-70%'}
+                        </span>
+                      </td>
                       <td className="py-1.5 px-2">
                         <span className={`px-1 py-0.5 rounded text-[9px] font-sans ${
                           r.pumpOn ? 'bg-emerald-100 text-emerald-800' : 'bg-neutral-100 text-neutral-600'
@@ -743,10 +1177,8 @@ export const SimulatorPage: React.FC = () => {
                           {r.pumpOn ? 'ON' : 'OFF'}
                         </span>
                       </td>
-                      <td className="py-1.5 px-2 font-sans">
-                        <span className="text-[10px] text-[#5B665F]">
-                          {getMoistureStatus(r.soilMoisturePct)}
-                        </span>
+                      <td className="py-1.5 px-2 text-[#5B665F]">
+                        {r.waterUsedL ?? 0} L
                       </td>
                     </tr>
                   ))}
@@ -756,7 +1188,7 @@ export const SimulatorPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Collapsible Arduino Firmware Code (.ino) */}
+        {/* Collapsible Arduino Firmware Code (.ino) with Crop Profile Selector */}
         <div className="bg-white rounded-2xl border border-[#2F6B3A]/15 overflow-hidden shadow-xs">
           <button
             onClick={() => setFirmwareCodeOpen(!firmwareCodeOpen)}
@@ -769,7 +1201,7 @@ export const SimulatorPage: React.FC = () => {
                   Production Arduino UNO C++ Firmware (`crop_advisor_firmware.ino`)
                 </span>
                 <span className="text-xs text-[#5B665F]">
-                  Exact matching pins (DHT22 on D2, Soil A0, LDR A1, Water A2, Relay D7) & calibrated hysteresis
+                  Selected profile: {activeProfile.name} (ON below {soilPctToAdc(effectiveOnPct)} ADC | OFF above {soilPctToAdc(effectiveOffPct)} ADC)
                 </span>
               </div>
             </div>
@@ -781,7 +1213,9 @@ export const SimulatorPage: React.FC = () => {
           {firmwareCodeOpen && (
             <div className="p-4 bg-[#0B0F19] border-t border-neutral-800 space-y-3">
               <div className="flex justify-between items-center text-xs">
-                <span className="text-neutral-400 font-mono">Compatible with Arduino IDE, PlatformIO & Wokwi</span>
+                <span className="text-neutral-400 font-mono">
+                  Configured for: {activeProfile.name} ({effectiveOnPct}% - {effectiveOffPct}%) · Includes #define profile selector
+                </span>
                 <button
                   onClick={handleCopyCode}
                   className="flex items-center gap-1.5 px-3 py-1 bg-neutral-800 hover:bg-neutral-700 text-white rounded text-xs transition-colors"
@@ -791,7 +1225,7 @@ export const SimulatorPage: React.FC = () => {
                 </button>
               </div>
               <pre className="p-3 text-neutral-200 font-mono text-[11px] leading-relaxed overflow-x-auto max-h-[350px] custom-scrollbar-dark">
-                {generateArduinoInoCode(settings)}
+                {generateArduinoInoCode(settings, activeProfile, customThresholds)}
               </pre>
             </div>
           )}

@@ -31,6 +31,7 @@ import {
 } from 'recharts';
 import { useApp } from '../context/AppContext';
 import { scoreAllCrops } from '../lib/cropScoring';
+import { findIrrigationProfile } from '../lib/irrigationProfiles';
 import { CropResult } from '../types';
 
 const SOIL_PRESETS = [
@@ -101,7 +102,8 @@ export const CropAdvicePage: React.FC = () => {
     setCustomSoilParams,
     farmerInputs,
     setFarmerInputs,
-    readings
+    readings,
+    setSelectedCropId
   } = useApp();
 
   const [expandedCropId, setExpandedCropId] = useState<string | null>(null);
@@ -578,16 +580,17 @@ export const CropAdvicePage: React.FC = () => {
                         </span>
                         <span>·</span>
                         <span className="flex items-center gap-1">
-                          <Droplet className="w-3.5 h-3.5" /> {item.crop.waterNeed} Water
+                          <Droplet className="w-3.5 h-3.5 text-[#2F6B3A]" /> {item.crop.waterNeed} Water ({findIrrigationProfile(item.crop.name).waterDemand} demand)
                         </span>
                         <span>·</span>
                         <span>Yield: <strong className="text-[#1F2A24]">{item.crop.yieldQtlPerAcre} qtl/acre</strong></span>
                       </div>
-                      <div className="text-xs text-[#5B665F]">
-                        Modal Mandi Price: <strong className="text-[#1F2A24]">₹{item.crop.priceModal}/qtl</strong>
-                        {item.crop.msp && (
-                          <span className="ml-2 text-emerald-700">(MSP: ₹{item.crop.msp})</span>
-                        )}
+                      <div className="text-xs text-[#5B665F] flex flex-wrap items-center gap-3 pt-0.5">
+                        <span>Modal Mandi Price: <strong className="text-[#1F2A24]">₹{item.crop.priceModal}/qtl</strong>{item.crop.msp && <span className="ml-1 text-emerald-700 font-semibold">(MSP: ₹{item.crop.msp})</span>}</span>
+                        <span>·</span>
+                        <span className="text-[#2F6B3A] font-medium">
+                          Simulator Rate: {findIrrigationProfile(item.crop.name).waterUseMultiplier}x tank drain ({findIrrigationProfile(item.crop.name).onBelowPct}% - {findIrrigationProfile(item.crop.name).offAbovePct}% target)
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -609,8 +612,8 @@ export const CropAdvicePage: React.FC = () => {
                     </ResponsiveContainer>
                   </div>
 
-                  {/* Right: Profit & Score */}
-                  <div className="flex items-center justify-between lg:justify-end gap-6 w-full lg:w-auto pt-3 lg:pt-0 border-t lg:border-t-0 border-neutral-100">
+                  {/* Right: Profit & Score & Simulator Button */}
+                  <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row items-start sm:items-center justify-between lg:justify-end gap-4 w-full lg:w-auto pt-3 lg:pt-0 border-t lg:border-t-0 border-neutral-100">
                     <div className="text-left lg:text-right">
                       <span className="text-[10px] text-[#5B665F] uppercase tracking-wider block">Estimated Profit</span>
                       <div className="text-xl font-bold text-[#2F6B3A] font-mono">
@@ -627,6 +630,21 @@ export const CropAdvicePage: React.FC = () => {
                         {item.suitability}%
                       </span>
                     </div>
+
+                    {/* Test in Simulator Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const profile = findIrrigationProfile(item.crop.name);
+                        setSelectedCropId(profile.id);
+                        navigate(`/simulator?crop=${profile.id}`);
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-2 bg-[#FAF7F0] hover:bg-[#E8F1E4] border border-[#2F6B3A]/25 text-[#2F6B3A] rounded-xl text-xs font-semibold transition-colors shrink-0 shadow-xs"
+                      title={`Open Simulator with ${item.crop.name} irrigation profile`}
+                    >
+                      <Droplet className="w-3.5 h-3.5" />
+                      <span>Test in Simulator</span>
+                    </button>
                   </div>
                 </div>
 

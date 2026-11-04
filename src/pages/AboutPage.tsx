@@ -196,6 +196,15 @@ export const AboutPage: React.FC = () => {
           </ul>
         </div>
       </div>
+
+      {/* Agronomic Advisory Disclaimer Banner (Requirement 6) */}
+      <div className="p-4 bg-[#FAF7F0] rounded-xl border border-[#2F6B3A]/20 flex items-center gap-3 text-xs text-[#5B665F]">
+        <AlertCircle className="w-5 h-5 text-[#2F6B3A] shrink-0" />
+        <div>
+          <strong className="text-[#1F2A24] block">Crop Moisture & Irrigation Threshold Advisory:</strong>
+          <span>Indicative values, verify with your state agriculture department and local Krishi Vigyan Kendra (KVK) for field-specific irrigation recommendations.</span>
+        </div>
+      </div>
     </div>
   );
 };

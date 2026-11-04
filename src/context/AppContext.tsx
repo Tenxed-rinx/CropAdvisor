@@ -53,6 +53,8 @@ interface AppContextType {
   }>>;
   farmerInputs: FarmerInputs;
   setFarmerInputs: React.Dispatch<React.SetStateAction<FarmerInputs>>;
+  selectedCropId: string;
+  setSelectedCropId: (cropId: string) => void;
   storageSizeKb: number;
 }
 
@@ -60,7 +62,8 @@ const STORAGE_KEYS = {
   READINGS: 'crop_advisor_readings_v1',
   SETTINGS: 'crop_advisor_settings_v1',
   FARMER_INPUTS: 'crop_advisor_farmer_inputs_v1',
-  SOIL_PARAMS: 'crop_advisor_soil_params_v1'
+  SOIL_PARAMS: 'crop_advisor_soil_params_v1',
+  SELECTED_CROP: 'crop_advisor_selected_crop_v1'
 };
 
 const DEFAULT_FARMER_INPUTS: FarmerInputs = {
@@ -100,7 +103,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [selectedReadingForAnalysis, setSelectedReadingForAnalysis] = useState<SensorReading | null>(null);
   const [farmerInputs, setFarmerInputs] = useState<FarmerInputs>(DEFAULT_FARMER_INPUTS);
   const [customSoilParams, setCustomSoilParams] = useState(DEFAULT_SOIL_PARAMS);
+  const [selectedCropId, setSelectedCropIdState] = useState<string>('general');
   const [storageSizeKb, setStorageSizeKb] = useState<number>(0);
+
+  const setSelectedCropId = (cropId: string) => {
+    setSelectedCropIdState(cropId);
+    saveToStorage(STORAGE_KEYS.SELECTED_CROP, cropId);
+  };
 
   // Calculate approximate storage usage
   const calculateStorageSize = useCallback(() => {
@@ -273,7 +282,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ec: Number(row.ec ?? 1.2),
             rainfallMm: Number(row.rainfallMm ?? 0),
             pumpOn: row.pumpOn === true || row.pumpOn === 'true',
-            alerts: row.alerts && row.alerts !== 'None' ? String(row.alerts).split(';').map(s => s.trim()) : []
+            alerts: row.alerts && row.alerts !== 'None' ? String(row.alerts).split(';').map(s => s.trim()) : [],
+            cropProfile: row.cropProfile || 'General',
+            targetMinPct: Number(row.targetMinPct ?? 63),
+            targetMaxPct: Number(row.targetMaxPct ?? 70),
+            waterUsedL: Number(row.waterUsedL ?? 0)
           }));
           setReadings(loaded);
           saveToStorage(STORAGE_KEYS.READINGS, loaded);
@@ -327,7 +340,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 ec: row.ec ? Number(row.ec) : 1.2,
                 rainfallMm: row.rainfallMm ? Number(row.rainfallMm) : 0,
                 pumpOn: row.pumpOn === true || row.pumpOn === 'true',
-                alerts: row.alerts ? (Array.isArray(row.alerts) ? row.alerts : String(row.alerts).split(';').map(s => s.trim())) : []
+                alerts: row.alerts ? (Array.isArray(row.alerts) ? row.alerts : String(row.alerts).split(';').map(s => s.trim())) : [],
+                cropProfile: row.cropProfile || row.crop || 'General',
+                targetMinPct: Number(row.targetMinPct ?? 63),
+                targetMaxPct: Number(row.targetMaxPct ?? 70),
+                waterUsedL: Number(row.waterUsedL ?? 0)
               });
             } catch {
               errorCount++;
@@ -358,15 +375,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  // CSV Export matching exact columns
+  // CSV Export matching exact columns including crop awareness
   const exportCsvData = () => {
     if (readings.length === 0) return;
     const formatted = readings.map(r => ({
       id: r.id,
       timestamp: r.timestamp,
       source: r.source,
+      cropProfile: r.cropProfile || 'General',
+      targetMinPct: r.targetMinPct ?? 63,
+      targetMaxPct: r.targetMaxPct ?? 70,
       soilMoistureAdc: r.soilMoistureAdc,
       soilMoisturePct: r.soilMoisturePct,
+      waterUsedL: r.waterUsedL ?? 0,
       tempC: r.tempC,
       humidityPct: r.humidityPct,
       lightAdc: r.lightAdc,
@@ -440,6 +461,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setCustomSoilParams,
         farmerInputs,
         setFarmerInputs,
+        selectedCropId,
+        setSelectedCropId,
         storageSizeKb
       }}
     >

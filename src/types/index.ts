@@ -18,9 +18,12 @@ export interface SensorReading {
   rainfallMm?: number;         // mm, optional
   sandPct?: number;            // % sand
   siltPct?: number;            // % silt
-  clayPct?: number;            // % clay
   pumpOn: boolean;
   alerts: string[];
+  cropProfile?: string;        // Name or ID of crop profile active during logging
+  targetMinPct?: number;       // Crop target lower moisture threshold %
+  targetMaxPct?: number;       // Crop target upper moisture threshold %
+  waterUsedL?: number;         // Cumulative or incremental estimated water used (L)
 }
 
 export interface SoilProfile {
@@ -96,6 +99,8 @@ export interface SimulationSettings {
   realisticNoise: boolean;      // default true (+-2%)
   autoLog: boolean;             // default true
   speed: 1 | 2 | 5;             // 1x, 2x, 5x
+  selectedCropId?: string;      // default 'general'
+  cropThresholdOverrides?: Record<string, { onBelowPct: number; offAbovePct: number }>;
 }
 
 export interface FarmerInputs {

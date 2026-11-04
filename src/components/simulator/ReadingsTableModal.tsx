@@ -178,13 +178,13 @@ export const ReadingsTableModal: React.FC<ReadingsTableModalProps> = ({
               <tr>
                 <th className="py-2.5 px-3">#</th>
                 <th className="py-2.5 px-3">ID / Time</th>
-                <th className="py-2.5 px-3">Source</th>
+                <th className="py-2.5 px-3">Crop Profile</th>
                 <th className="py-2.5 px-3">Soil Moisture</th>
                 <th className="py-2.5 px-3">Temp (°C)</th>
                 <th className="py-2.5 px-3">Hum (%)</th>
                 <th className="py-2.5 px-3">pH</th>
-                <th className="py-2.5 px-3">N-P-K (mg/kg)</th>
                 <th className="py-2.5 px-3">Pump</th>
+                <th className="py-2.5 px-3">Water</th>
                 <th className="py-2.5 px-3 text-right">Action</th>
               </tr>
             </thead>
@@ -215,15 +215,12 @@ export const ReadingsTableModal: React.FC<ReadingsTableModalProps> = ({
                           {new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </td>
-                      <td className="py-2.5 px-3">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-sans font-semibold ${
-                          r.source === 'simulated'
-                            ? 'bg-blue-50 text-blue-700'
-                            : r.source === 'sample'
-                            ? 'bg-amber-50 text-amber-700'
-                            : 'bg-purple-50 text-purple-700'
-                        }`}>
-                          {r.source}
+                      <td className="py-2.5 px-3 font-sans">
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#E8F1E4] text-[#2F6B3A] font-semibold block w-fit">
+                          {r.cropProfile || 'General'}
+                        </span>
+                        <span className="text-[10px] text-[#5B665F] block font-mono mt-0.5">
+                          Target: {r.targetMinPct ?? 63}%-{r.targetMaxPct ?? 70}%
                         </span>
                       </td>
                       <td className="py-2.5 px-3">
@@ -237,15 +234,15 @@ export const ReadingsTableModal: React.FC<ReadingsTableModalProps> = ({
                       <td className="py-2.5 px-3">{r.tempC}°C</td>
                       <td className="py-2.5 px-3">{r.humidityPct}%</td>
                       <td className="py-2.5 px-3 font-bold text-[#1F2A24]">{r.ph.toFixed(1)}</td>
-                      <td className="py-2.5 px-3 text-[#5B665F]">
-                        {r.n ?? 80}-{r.p ?? 40}-{r.k ?? 45}
-                      </td>
                       <td className="py-2.5 px-3">
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-sans font-medium ${
                           r.pumpOn ? 'bg-emerald-100 text-emerald-800' : 'bg-neutral-100 text-neutral-600'
                         }`}>
                           {r.pumpOn ? 'ON' : 'OFF'}
                         </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-[#5B665F]">
+                        {r.waterUsedL ?? 0} L
                       </td>
                       <td className="py-2.5 px-3 text-right font-sans" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1.5">

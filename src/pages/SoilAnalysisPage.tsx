@@ -14,7 +14,8 @@ import {
   Edit3,
   HelpCircle,
   FlaskConical,
-  ChevronDown
+  ChevronDown,
+  Droplets
 } from 'lucide-react';
 import {
   RadarChart,
@@ -33,6 +34,7 @@ import {
 } from 'recharts';
 import { useApp } from '../context/AppContext';
 import { validateAndClampInput } from '../lib/units';
+import { findIrrigationProfile } from '../lib/irrigationProfiles';
 import { ReadingsTableModal } from '../components/simulator/ReadingsTableModal';
 
 const SAMPLE_KAGGLE_PRESETS = [
@@ -98,8 +100,13 @@ export const SoilAnalysisPage: React.FC = () => {
     customSoilParams,
     setCustomSoilParams,
     selectReadingForAnalysis,
-    selectedReadingForAnalysis
+    selectedReadingForAnalysis,
+    selectedCropId
   } = useApp();
+
+  const activeCropProfile = findIrrigationProfile(selectedCropId);
+  const isMoistureBelow = customSoilParams.moisturePct < activeCropProfile.onBelowPct;
+  const isMoistureAbove = customSoilParams.moisturePct > activeCropProfile.offAbovePct;
 
   const [tableModalOpen, setTableModalOpen] = useState(false);
   const [sourceMode, setSourceMode] = useState<'latest' | 'picker' | 'sample' | 'manual'>('latest');
@@ -350,6 +357,32 @@ export const SoilAnalysisPage: React.FC = () => {
                 <span>10% (Dry Sand)</span>
                 <span>50% (Optimal)</span>
                 <span>95% (Waterlogged)</span>
+              </div>
+
+              {/* Crop Target Moisture Comparison Alert */}
+              <div className={`mt-2 p-2.5 rounded-xl border text-xs space-y-1 ${
+                isMoistureBelow
+                  ? 'bg-amber-50 border-amber-200 text-amber-900'
+                  : isMoistureAbove
+                  ? 'bg-blue-50 border-blue-200 text-blue-900'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              }`}>
+                <div className="flex items-center justify-between font-semibold">
+                  <span className="flex items-center gap-1.5">
+                    <Droplets className="w-3.5 h-3.5 text-[#2F6B3A]" />
+                    <span>{activeCropProfile.name} Target Band ({activeCropProfile.onBelowPct}% - {activeCropProfile.offAbovePct}%)</span>
+                  </span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-bold">
+                    {isMoistureBelow ? 'Under-Hydrated' : isMoistureAbove ? 'Excess Moisture' : 'In Band'}
+                  </span>
+                </div>
+                <p className="text-[11px] leading-relaxed">
+                  {isMoistureBelow
+                    ? `Moisture is below the target for ${activeCropProfile.name}. Soil moisture (${customSoilParams.moisturePct}%) is drier than the minimum ${activeCropProfile.onBelowPct}% required.`
+                    : isMoistureAbove
+                    ? `Moisture is above the target for ${activeCropProfile.name}. Soil moisture (${customSoilParams.moisturePct}%) exceeds the ${activeCropProfile.offAbovePct}% upper limit.`
+                    : `Current moisture (${customSoilParams.moisturePct}%) satisfies the target band for ${activeCropProfile.name}.`}
+                </p>
               </div>
             </div>
 
